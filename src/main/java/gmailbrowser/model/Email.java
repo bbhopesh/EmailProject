@@ -1,15 +1,19 @@
-package gmailbrowser;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+package gmailbrowser.model;
+import com.fasterxml.jackson.annotation.JsonGetter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+
+import javax.mail.BodyPart;
+import javax.mail.Header;
+import javax.mail.MessagingException;
+import javax.mail.Session;
+import javax.mail.internet.MimeMessage;
+import javax.mail.internet.MimeMultipart;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
-
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
-import java.io.*;
-import javax.mail.*;
-import javax.mail.internet.*;
 
 public class Email implements IEmail { 
 	
@@ -18,7 +22,8 @@ public class Email implements IEmail {
 	private String main_file;
 	private String file_directory;
 	private MimeMessage message;
-	
+    private EmailMetaData metaData;
+
 	public Email (String threadID, String directory) throws Exception {
 		
 		Properties props = System.getProperties();
@@ -34,7 +39,7 @@ public class Email implements IEmail {
 		//create two files to test if the file that exists is zipped or not
 		File f = new File(directory + File.separator + threadID + ".eml");
 		File f2 = new File(directory + File.separator + threadID + ".eml.gz");
-		
+
 		//if unzipped file exists
 		if (f.exists()) {
 			this.main_file = directory + File.separator + threadID + ".eml";
@@ -52,37 +57,26 @@ public class Email implements IEmail {
 		else {
 			throw new IllegalArgumentException("This file does not exists.");
 		}
+		// Read metadata.
+		this.metaData = new ObjectMapper().readValue(new File(this.meta_file), EmailMetaData.class);
 	}
-	
-	public JSONObject getMetadata() {
-		StringBuilder content = new StringBuilder();
-		//FileReader reads characters instead of bytes
-		//BufferedReader takes in a character input stream
-		try (BufferedReader br = new BufferedReader(new FileReader(this.meta_file))) {
-			String currentLine = br.readLine();
-			while (currentLine != null) {
-				content.append(currentLine).append("\n");
-				currentLine = br.readLine();
-			}
-		}
-		catch (IOException e) {
-			e.printStackTrace();
-		}
-		//content is a StringBuilder. convert to string and then try converting to JSONObject
-		try {
-			JSONObject jsonObj = new JSONObject(content.toString());
-			return jsonObj;
-		} 
-		catch (JSONException e) {
-			e.printStackTrace();
-		}
-		return null;
-	}
+
+    @JsonGetter("_meta_")
+    public EmailMetaData getMetadata() {
+	   return this.metaData;
+    }
+
 	//Enumeration is like bucky("nice", "22"), Sahil("cool", "18");
+    @JsonGetter("headers")
 	@Override
-	public Map<String, String> getHeaders() throws MessagingException {
+	public Map<String, String> getHeaders() {
 		Map<String, String> headerMap = new HashMap<>();
-		Enumeration<Header> allHeaders = message.getAllHeaders();
+		Enumeration<Header> allHeaders = null;
+		try {
+			allHeaders = message.getAllHeaders();
+		} catch (MessagingException e) {
+		    return ExceptionUtils.rethrow(e);
+		}
 		//while the enumeration has more elements, retriever the next element and get the name and value
 		while (allHeaders.hasMoreElements()) {
 			Header header = (Header) allHeaders.nextElement();
@@ -93,28 +87,30 @@ public class Email implements IEmail {
 		return headerMap;
 	}
 
+	@JsonGetter("id")
 	@Override
-	public String getID() throws JSONException {
-		//get the message in JSON form
-		JSONObject test = this.getMetadata();
-		//get the thread ID
-		Number stringID = test.getNumber("thread_ids");
-		return stringID.toString();
+	public String getID() {
+        return String.valueOf(this.metaData.getThreadIds());
 	}
 
+    @JsonGetter("body")
 	@Override
-	public Map<String, String> getContent() throws Exception {
+	public Map<String, String> getContent() {
 		HashMap<String, String> end = new HashMap<String, String>();
-		if (message.isMimeType("text/plain")) {
-			end.put(message.getContentType().split(";")[0], message.getContent().toString());
-		}
-		else if (message.isMimeType("multipart/*")) {
-			String pathname = message.getContentType().split(";")[0] + "|";
-			MimeMultipart test = (MimeMultipart) message.getContent();
-			Map<String, String > result = getMultiPart(test, pathname);
-			for (String i : result.keySet()) {
-				end.put(i, result.get(i));
+		try {
+			if (message.isMimeType("text/plain")) {
+				end.put(message.getContentType().split(";")[0], message.getContent().toString());
 			}
+			else if (message.isMimeType("multipart/*")) {
+				String pathname = message.getContentType().split(";")[0] + "|";
+				MimeMultipart test = (MimeMultipart) message.getContent();
+				Map<String, String > result = getMultiPart(test, pathname);
+				for (String i : result.keySet()) {
+					end.put(i, result.get(i));
+				}
+			}
+		} catch (Exception e) {
+		    return ExceptionUtils.rethrow(e);
 		}
 		return end;
 	}
@@ -137,43 +133,49 @@ public class Email implements IEmail {
 		}
 		return contents;
 	}
-	
+
+	@JsonGetter("from")
+	public NameAndEmailAddress getFromNameAndEmailAddress() throws Exception {
+	    return new NameAndEmailAddress(getFromName(), getFromEmail());
+	}
+
 	@Override
-	public String getFromName() throws Exception {
+	public String getFromName() {
 		//getFrom returns an array of the name and the email
-		String messageString = message.getFrom()[0].toString();
+		String messageString = null;
+		try {
+			messageString = message.getFrom()[0].toString();
+		} catch (MessagingException e) {
+			return ExceptionUtils.rethrow(e);
+		}
 		//get index of < and return the name
 		int index = messageString.lastIndexOf("<");
         return messageString.substring(0, index);
 	}
 	
 	@Override
-	public String getFromEmail() throws Exception {
+	public String getFromEmail() {
 		//do the opposite of getFromName
-		String messageString = message.getFrom()[0].toString();
+		String messageString = null;
+		try {
+			messageString = message.getFrom()[0].toString();
+		} catch (MessagingException e) {
+		    return ExceptionUtils.rethrow(e);
+		}
 		int index = messageString.lastIndexOf("<");
         return messageString.substring(index + 1, messageString.length() - 1);
 	}
 
+    @JsonGetter("subject")
 	@Override
-	public String getSubject() throws JSONException {
-		JSONObject test = this.getMetadata();
-		String subject = test.getString("subject");
-		return subject;
+	public String getSubject() {
+		return this.metaData.getSubject();
 	}
 
+    @JsonGetter("labels")
 	@Override
 	//get the labels
-	public List<String> getLabels() throws JSONException {
-		JSONObject test = this.getMetadata();
-		//make JSONArray of the labels
-		JSONArray end = test.getJSONArray("labels");
-		List<String> last = new ArrayList<String>();
-		//convert the JSONArray to a List
-		for (int i = 0; i < end.length(); i++) {
-			String use = (String) end.get(i);
-			last.add(use);
-		}
-		return last;
+	public List<String> getLabels() {
+	    return this.metaData.getLabels();
 	}
 }
